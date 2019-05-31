@@ -6,12 +6,44 @@
 #include <direct.h>
 #define BSIZE 4096
 #pragma warning (disable: 4996)
-//int nthread = 0;
 using namespace std;
+
+const string FILE_BLACKLIST = "blacklist.conf";
+const string CACHE_FOLDER = "Cache//";
+const string FILE_CACHE_LOG = "cachelog.conf";
 vector<string> hostBlack;
 vector<string> cacheDomain;
 
-vector<string> ReadFile(string filename)
+typedef struct ReceiveInfo
+{
+	string method;
+	string host;
+	string page;
+};
+ReceiveInfo getReceiveInfo(string request)
+{
+	// GET http://example.com/img/1.jpg HTTP/1.1/r/nHost: example.com\r\n...
+	ReceiveInfo res;
+	size_t pos = request.find(" ");
+	res.method = request.substr(0, pos);//GET
+	request.erase(0, pos+1);
+
+	pos = request.find(" HTTP/1.");
+	res.page = request.substr(0, pos);//http://example.com/img/1.jpg
+
+	pos = request.find("Host");
+	request.erase(0, pos + 6);
+	pos = request.find("\r\n");
+	res.host = request.substr(0, pos);//example.com
+
+	return res;
+}
+bool isSupport(ReceiveInfo ri)
+{
+	return (ri.method == "GET" || ri.method == "POST") && ri.host.find(":") == string::npos;
+}
+
+vector<string> readFile(string filename)
 {
 	fstream fp; fp.open(filename);
 	vector<string> res;
@@ -27,12 +59,8 @@ vector<string> ReadFile(string filename)
 	}
 	return res;
 }
-
-bool IsBlackList(string hostname)
+bool isBlackList(string hostname)
 {
-	if (hostname.find(":443") != string::npos)
-		return true;
-
 	int size = hostBlack.size();
 	size_t npos = hostname.npos;
 	for (int i = 0; i < size; i++)
@@ -44,25 +72,6 @@ bool IsBlackList(string hostname)
 	}
 	return false;
 }
-string GetDomainName(string res)
-{
-	size_t pos = res.find("Host");
-	res.erase(0, pos + 6);
-	pos = res.find("\r\n");
-	res = res.substr(0, pos);
-	/*pos = res.find(":443");
-	if(pos != res.npos)
-		res.erase(res.begin() + pos, res.end());*/
-	return res;
-}
-string GetPage(string str)
-{
-	size_t pos = str.find("GET");
-	str.erase(0, pos + 4);
-	pos = str.find(" HTTP/1.");
-	str = str.substr(0, pos);
-	return str;
-}
 void changeType(string& src) {
 	string s = "\/*:\"<>|?";
 	for (int i = 0; i < src.size(); i++) {
@@ -71,7 +80,7 @@ void changeType(string& src) {
 		}
 	}
 }
-string GetCache(string host, string page)
+string getCache(string host, string page)
 {
 	int size = cacheDomain.size();
 	string res = "";
@@ -80,44 +89,55 @@ string GetCache(string host, string page)
 		if (cacheDomain[i] == host)
 		{
 			changeType(page);
-			string filename = "cache//" + host + "//" + page + ".txt";
-			fstream fp(filename, ios::in, ios::binary);
+			string filename = CACHE_FOLDER + host + "//" + page;
+			ifstream fp(filename, ios::binary);
 			if (fp)
 			{
 				fp.seekg(0, fp.end);
-				int pos = fp.tellg();
+				size_t pos = fp.tellg();
 				fp.seekg(0, fp.beg);
-				char* buf = new char[pos + 1];
+				char* buf = new char[pos];
+				memset(buf, 0, pos);
 				fp.read(buf, sizeof(char) * pos);
-				res = (string)buf;
+				res = string(buf, pos);
 				delete[] buf;
+
+
+				/*char* buf = new char[BSIZE];
+				while (!fp.eof())
+				{
+					memset(buf, 0, BSIZE);
+					fp.read(buf, BSIZE);
+					res += string(buf);
+				}
+				delete[] buf;
+				fp.close();*/
 			}
 			break;
 		}
 	}
 	return res;
 }
-void SaveFileDomainName(string filename, string hostname)
+void saveFileDomainName(string filename, string hostname)
 {
-	mkdir(("./cache/" + hostname).c_str());
+	mkdir((CACHE_FOLDER + hostname).c_str());
 	fstream fp;
 	fp.open(filename, ios::app);
 	fp << hostname << endl;
 	fp.close();
 }
-void SaveFileCache(string host, string page, string buf)
+void saveFileCache(string host, string page, string buf)
 {
 	changeType(page);
-	string filename = "cache//" + host + "//" + page + ".txt";
-	fstream fp;
-	fp.open(filename, ios::app);
+	string filename = CACHE_FOLDER + host + "//" + page;
+	ofstream fp(filename, ios::binary);
 	if (fp)
 	{
-		fp << buf;
+		fp.write(buf.c_str(), buf.size());
 		fp.close();
 	}
 }
-bool FindHostList(string host)
+bool findHostList(string host)
 {
 	int size = cacheDomain.size();
 	for (int i = 0; i < size; i++)
@@ -127,29 +147,30 @@ bool FindHostList(string host)
 	}
 	return false;
 }
-bool get_ip(const char* host, char*& ip)
+string getIP(const char* host)
 {
 	struct hostent* hent;
-	int iplen = 15; //XXX.XXX.XXX.XXX
-	//char* ip = (char*)malloc(iplen + 1);
-	memset(ip, 0, iplen + 1);
+	string res ="";
+	
+	char* ip = new char[16];
+	memset(ip, 0, 16);
 	if ((hent = gethostbyname(host)) == NULL)
 	{
 		perror("Can't get IP");
-		return false;
+		goto getIPEnd;
 	}
-	if (inet_ntop(AF_INET, (void*)hent->h_addr_list[0], ip, iplen) == NULL)
+	if (inet_ntop(AF_INET, (void*)hent->h_addr_list[0], ip, 15) == NULL)
 	{
 		perror("Can't resolve host");
-		return false;
 	}
-	return true;
+getIPEnd:
+	res = string(ip);
+	delete[] ip;
+	return res;
 }
 DWORD WINAPI ProcessClient(LPVOID lp)
 {
-	cout << "Da co client ket noi\n";
-	//int t = nthread;
-	//cout << "\n\nSTART-------------- " << t << " -------------------------\n";
+	//cout << "Da co client ket noi\n";
 	SOCKET* hConnected = (SOCKET*)lp;
 	CSocket Proxy_WebClient;
 	//Chuyen ve lai CSocket
@@ -167,45 +188,40 @@ DWORD WINAPI ProcessClient(LPVOID lp)
 			break;
 		memset(buf, 0, BSIZE);
 	}
-
-	string hostname = GetDomainName(receive);
-	string page = GetPage(receive);
+	
+	ReceiveInfo ri = getReceiveInfo(receive);
+	string hostname = ri.host;
+	string page = ri.page;
 	string respone;
 	//cout << "=================Browser================\n" << receive << endl;
 
-	if (IsBlackList(hostname))
+	if (isBlackList(hostname) || !isSupport(ri))
 	{
 		//send 403
 		respone = "HTTP/1.0 403 Forbidden\r\n";
 		Proxy_WebClient.Send(respone.c_str(), respone.size(), 0);
 
 	}
-	else if ((respone = GetCache(hostname, page)) != "")
+	else if ((respone = getCache(hostname, page)) != "")
 	{
+		cout << "Da co client ket noi\n";
 		cout << "=================Browser================\n" << receive << endl;
-
 		//send cache saved
-		//respone = GetCache(hostname, page);
 		Proxy_WebClient.Send(respone.c_str(), respone.size(), 0);
-		//cout << respone << endl;
-		changeType(page);
-		string filename = "cache//" + hostname + "//" + page + "_respone.txt";
-		fstream fp;  fp.open(filename, ios::out);
-		fp << respone;
-		fp.close();
 	}
 	else
 	{
+		cout << "Da co client ket noi\n";
 		cout << "Hostname: " << hostname << endl;
-		char* ip = new char[16];
-		if (get_ip(hostname.c_str(), ip))
+		string ip = getIP(hostname.c_str());
+
+		if (ip != "")
 		{
 			cout << "IP: " << ip << endl;
-
 			//Tao 1 cong de nhan DL tu WebServer gui ve
 			CSocket Proxy_WebServer;
 			Proxy_WebServer.Create();
-			if (Proxy_WebServer.Connect(ip, 80) == FALSE)
+			if (Proxy_WebServer.Connect(ip.c_str(), 80) == FALSE)
 			{
 				//send 404
 				respone = "HTTP/1.0 404 NotFound\r\n";
@@ -214,10 +230,10 @@ DWORD WINAPI ProcessClient(LPVOID lp)
 			else
 			{
 				// FILE :) 
-				if (!FindHostList(hostname))
+				if (!findHostList(hostname))
 				{
 					cacheDomain.push_back(hostname);
-					SaveFileDomainName("logcache.conf", hostname);
+					saveFileDomainName(FILE_CACHE_LOG, hostname);
 				}
 
 				Proxy_WebServer.Send(receive.c_str(), receive.size() + 1, 0);
@@ -225,23 +241,23 @@ DWORD WINAPI ProcessClient(LPVOID lp)
 				receive = "";
 				while ((len = Proxy_WebServer.Receive(buf, BSIZE, 0)) > 0)
 				{
-					//Proxy_WebClient.Send(buf, len, 0);
 					receive += string(buf, len);
 					memset(buf, 0, len);
+					/*if (buf[len - 1] == 0 && buf[len - 2] == 0)
+						break;*/
 				}
 				Proxy_WebClient.Send(receive.c_str(), receive.size(), 0);
-				SaveFileCache(hostname, page, receive);
+				saveFileCache(hostname, page, receive);
+
 			}
 
 			Proxy_WebServer.Close();
 		}
-		delete[] ip;
 	}
 
 	delete[] buf;
 	delete hConnected;
 	Proxy_WebClient.Close();
-	//cout << "\n\nEND-------------- " << t << " -------------------------\n";
 
 }
 
@@ -272,9 +288,9 @@ int main()
 	{
 		cout << "Khoi tao Server thanh cong\n";
 		//Doc blacklist
-		hostBlack = ReadFile("blacklist.conf");
-		cacheDomain = ReadFile("logcache.conf");
-		mkdir(string("cache").c_str());
+		hostBlack = readFile(FILE_BLACKLIST);
+		cacheDomain = readFile(FILE_CACHE_LOG);
+		mkdir(CACHE_FOLDER.c_str());
 		//Tao 1 Cong giao tiep voi Browser
 		CSocket Proxy_WebClient;
 		//*
@@ -282,7 +298,7 @@ int main()
 		HANDLE threadStatus;
 		while (1)
 		{
-			cout << "Dang doi Client ket noi....";
+			//cout << "Dang doi Client ket noi....";
 			ProxyServer.Listen();
 			ProxyServer.Accept(Proxy_WebClient);
 			//Khoi tao con tro Socket
