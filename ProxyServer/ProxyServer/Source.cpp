@@ -4,8 +4,9 @@
 #include <fstream>
 #include <afxsock.h>
 #include <direct.h>
-#define BSIZE 4096
 #pragma warning (disable: 4996)
+#define PROXY_PORT 8888
+#define BUFSIZE 4096
 using namespace std;
 
 const string FILE_BLACKLIST = "blacklist.conf";
@@ -101,17 +102,6 @@ string getCache(string host, string page)
 				fp.read(buf, sizeof(char) * pos);
 				res = string(buf, pos);
 				delete[] buf;
-
-
-				/*char* buf = new char[BSIZE];
-				while (!fp.eof())
-				{
-					memset(buf, 0, BSIZE);
-					fp.read(buf, BSIZE);
-					res += string(buf);
-				}
-				delete[] buf;
-				fp.close();*/
 			}
 			break;
 		}
@@ -156,12 +146,12 @@ string getIP(const char* host)
 	memset(ip, 0, 16);
 	if ((hent = gethostbyname(host)) == NULL)
 	{
-		perror("Can't get IP");
+		cout << "\nCan't get IP host " << host;
 		goto getIPEnd;
 	}
 	if (inet_ntop(AF_INET, (void*)hent->h_addr_list[0], ip, 15) == NULL)
 	{
-		perror("Can't resolve host");
+		cout << "\nCan't resolve host " << host;
 	}
 getIPEnd:
 	res = string(ip);
@@ -177,128 +167,126 @@ DWORD WINAPI ProcessClient(LPVOID lp)
 	Proxy_WebClient.Attach(*hConnected);
 
 	int len;
-	char* buf = new char[BSIZE];
-	memset(buf, 0, BSIZE);
-	string receive = "";
+	char* buf = new char[BUFSIZE]; //ho tro qua trinh nhan gui
+	memset(buf, 0, BUFSIZE);
+	string receive = ""; // bien nhan du lieu
+	string respone = ""; // bien chua ket qua tra ve cho client
 
-	while ((len = Proxy_WebClient.Receive(buf, BSIZE, 0)) > 0)
+	//Nhan du lieu tu Client gui len
+	while ((len = Proxy_WebClient.Receive(buf, BUFSIZE, 0)) > 0)
 	{
-		receive += (string)buf;
+		receive += string(buf, len);
 		if (receive.find("\r\n\r\n") != string::npos)
 			break;
-		memset(buf, 0, BSIZE);
+		memset(buf, 0, BUFSIZE);
 	}
-	
+	//cout << "=================Browser================\n" << receive << endl;
+
+	//Phan tich goi gui cua client
 	ReceiveInfo ri = getReceiveInfo(receive);
 	string hostname = ri.host;
 	string page = ri.page;
-	string respone;
-	//cout << "=================Browser================\n" << receive << endl;
 
+	//Kiem tra nhung trang bi chan, hoac khong ho tro
 	if (isBlackList(hostname) || !isSupport(ri))
 	{
-		//send 403
+		cout << "\nForbidden " << hostname;
+		//gui 403 tu choi truy cap
 		respone = "HTTP/1.0 403 Forbidden\r\n";
 		Proxy_WebClient.Send(respone.c_str(), respone.size(), 0);
 
 	}
-	else if ((respone = getCache(hostname, page)) != "")
-	{
-		cout << "Da co client ket noi\n";
-		cout << "=================Browser================\n" << receive << endl;
-		//send cache saved
-		Proxy_WebClient.Send(respone.c_str(), respone.size(), 0);
-	}
 	else
 	{
-		cout << "Da co client ket noi\n";
-		cout << "Hostname: " << hostname << endl;
-		string ip = getIP(hostname.c_str());
-
-		if (ip != "")
+		cout << "\nClient connected!";
+		if ((respone = getCache(hostname, page)) != "")
 		{
-			cout << "IP: " << ip << endl;
-			//Tao 1 cong de nhan DL tu WebServer gui ve
-			CSocket Proxy_WebServer;
-			Proxy_WebServer.Create();
-			if (Proxy_WebServer.Connect(ip.c_str(), 80) == FALSE)
+			//send cache da luu
+			cout << "\nSend data from Cache";
+			Proxy_WebClient.Send(respone.c_str(), respone.size(), 0);
+		}
+		else
+		{
+			cout << "\nHostname: " << hostname;
+			string ip = getIP(hostname.c_str());
+			if (ip != "")
 			{
-				//send 404
-				respone = "HTTP/1.0 404 NotFound\r\n";
-				Proxy_WebClient.Send(respone.c_str(), respone.size(), 0);
-			}
-			else
-			{
-				// FILE :) 
-				if (!findHostList(hostname))
+				cout << "\nIP: " << ip;
+				//Tao 1 cong de nhan DL tu WebServer gui ve
+				CSocket Proxy_WebServer;
+				Proxy_WebServer.Create();
+				if (Proxy_WebServer.Connect(ip.c_str(), 80) == FALSE)
 				{
-					cacheDomain.push_back(hostname);
-					saveFileDomainName(FILE_CACHE_LOG, hostname);
+					//send 404 khong the ket noi thoi server
+					cout << "\nCould connect to Server";
+					respone = "HTTP/1.0 404 NotFound\r\n";
+					Proxy_WebClient.Send(respone.c_str(), respone.size(), 0);
 				}
-
-				Proxy_WebServer.Send(receive.c_str(), receive.size() + 1, 0);
-				memset(buf, 0, BSIZE);
-				receive = "";
-				while ((len = Proxy_WebServer.Receive(buf, BSIZE, 0)) > 0)
+				else
 				{
-					receive += string(buf, len);
-					memset(buf, 0, len);
-					/*if (buf[len - 1] == 0 && buf[len - 2] == 0)
-						break;*/
+					//Kiem tra da luu file host truy cap da dc ghi vao file Cache chua
+					if (!findHostList(hostname))
+					{
+						cacheDomain.push_back(hostname);
+						saveFileDomainName(FILE_CACHE_LOG, hostname);
+					}
+					//Gui request tu browser len webserver
+					Proxy_WebServer.Send(receive.c_str(), receive.size() + 1, 0);
+					//Nhan du lieu tu webserver gui ve
+					memset(buf, 0, BUFSIZE);
+					receive = "";
+					while ((len = Proxy_WebServer.Receive(buf, BUFSIZE, 0)) > 0)
+					{
+						receive += string(buf, len);
+						memset(buf, 0, len);
+					}
+					//Send du lieu nhan duoc tu webserver ve lai cho browser dong thoi ghi nhan lai file cache
+					Proxy_WebClient.Send(receive.c_str(), receive.size(), 0);
+					saveFileCache(hostname, page, receive);
 				}
-				Proxy_WebClient.Send(receive.c_str(), receive.size(), 0);
-				saveFileCache(hostname, page, receive);
-
+				Proxy_WebServer.Close();
 			}
-
-			Proxy_WebServer.Close();
 		}
 	}
 
 	delete[] buf;
 	delete hConnected;
 	Proxy_WebClient.Close();
-
+	return 0;
 }
-
 int main()
 {
 	//Kiem tra goi MFC
 	if (!AfxWinInit(::GetModuleHandle(NULL), NULL, ::GetCommandLine(), 0))
 	{
-		cout << "Khong the su dung goi MFC\n";
+		cout << "MFC initialization failed\n";
 		return 0;
 	}
 	if (AfxSocketInit() == FALSE)
 	{
-		cout << "Khong the khoi tao Socket\n";
+		cout << "Could not use Socket\n";
 		return 0;
 	}
-	//Khoi tao Server
+	//Khoi tao Server mac dinh
 	CSocket ProxyServer;
-	int port = 8888;
-	/*cout << "Nhap port khoi tao Server: ";
-	cin >> port;*/
-	if (ProxyServer.Create(port, SOCK_STREAM, NULL) == FALSE)
-	{
-		//SOCK_STREAM: TCP, NULL: listen all card
-		cout << "Khong the khoi tao Server!\n";
-	}
+	if (ProxyServer.Create(PROXY_PORT, SOCK_STREAM, NULL) == FALSE)
+		cout << "Could not create Server!\n";
 	else
 	{
-		cout << "Khoi tao Server thanh cong\n";
-		//Doc blacklist
+		cout << "Server Created with port " << PROXY_PORT << endl;
+		//Doc blacklist, cachedomain
 		hostBlack = readFile(FILE_BLACKLIST);
 		cacheDomain = readFile(FILE_CACHE_LOG);
+		//Tao folder Cache
 		mkdir(CACHE_FOLDER.c_str());
 		//Tao 1 Cong giao tiep voi Browser
 		CSocket Proxy_WebClient;
-		//*
+		//Xu li luong
 		DWORD threadID;
 		HANDLE threadStatus;
 		while (1)
 		{
-			//cout << "Dang doi Client ket noi....";
+			cout << "\nWatting for client connect...";
 			ProxyServer.Listen();
 			ProxyServer.Accept(Proxy_WebClient);
 			//Khoi tao con tro Socket
@@ -307,7 +295,6 @@ int main()
 			*hConnected = Proxy_WebClient.Detach();
 			//Khoi tao thread tuong ung voi moi client Connect vao server.
 			//Nhu vay moi client se doc lap nhau, khong phai cho doi tung client xu ly rieng
-			//nthread++;
 			threadStatus = CreateThread(NULL, 0, ProcessClient, hConnected, 0, &threadID);
 		}
 	}
