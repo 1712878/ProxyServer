@@ -7,11 +7,14 @@
 #pragma warning (disable: 4996)
 #define PROXY_PORT 8888
 #define BUFSIZE 4096
+#define TTL 1000
+
 using namespace std;
 
 const string FILE_BLACKLIST = "blacklist.conf";
 const string CACHE_FOLDER = "Cache//";
 const string FILE_CACHE_LOG = "cachelog.conf";
+
 vector<string> hostBlack;
 vector<string> cacheDomain;
 
@@ -83,6 +86,8 @@ void changeType(string& src) {
 }
 string getCache(string host, string page)
 {
+	time_t localTime;
+	time(&localTime);
 	int size = cacheDomain.size();
 	string res = "";
 	for (int i = 0; i < size; i++)
@@ -94,14 +99,25 @@ string getCache(string host, string page)
 			ifstream fp(filename, ios::binary);
 			if (fp)
 			{
+				time_t timeFile;
+				fp >> timeFile;
+				if (difftime(localTime, timeFile) > TTL)
+				{
+					fp.close();
+					remove(filename.c_str());
+					return "";
+				}
+				size_t t = fp.tellg();
 				fp.seekg(0, fp.end);
 				size_t pos = fp.tellg();
-				fp.seekg(0, fp.beg);
+				pos -= t;
+				fp.seekg(t+1);
 				char* buf = new char[pos];
 				memset(buf, 0, pos);
 				fp.read(buf, sizeof(char) * pos);
 				res = string(buf, pos);
 				delete[] buf;
+				fp.close();
 			}
 			break;
 		}
@@ -123,6 +139,9 @@ void saveFileCache(string host, string page, string buf)
 	ofstream fp(filename, ios::binary);
 	if (fp)
 	{
+		time_t timeNow;
+		time(&timeNow);
+		fp << timeNow << "\n";
 		fp.write(buf.c_str(), buf.size());
 		fp.close();
 	}
